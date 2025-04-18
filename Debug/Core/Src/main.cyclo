@@ -1,0 +1,6 @@
+../Core/Src/main.c:48:5:main	1
+../Core/Src/main.c:58:6:RCC_Init	1
+../Core/Src/main.c:62:6:GPIOC_Init	1
+../Core/Src/main.c:84:6:SysTick_Init	1
+../Core/Src/main.c:91:6:SysTick_Set_Counter	1
+../Core/Src/main.c:96:6:SysTick_Handler	5
