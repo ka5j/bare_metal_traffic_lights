@@ -1,242 +1,269 @@
-/*
+/**
 * STM32 Traffic Light System with Pedestrian Walk Feature
 *
-* RED LED: PC8
-* YELLOW LED: PC6
-* GREEN LED: PC5
-* PEDESTRIAN (WHITE) LED: PC7
-* BUTTON: PA9
+* LEDs on GPIOC:
+*   - RED     : PC8
+*   - YELLOW  : PC6
+*   - GREEN   : PC5
+*   - WHITE   : PC7 (Pedestrian)
 *
-* State Sequence:
-*   RED (~1s), RED+YELLOW (~0.25s), GREEN (~1s), YELLOW (~0.25s), repeat
-*   Pedestrian request via PA9 toggles 'walk' flag; activates WHITE LED during RED state.
+* Button Input:
+*   - PA9: Toggles pedestrian request flag
+*
+* Light Sequence:
+*   RED (~3s), RED+YELLOW (~1s), GREEN (~3s), YELLOW (~1s), Repeat
+*   If pedestrian button is pressed, WHITE LED is enabled during RED state.
 */
 
 #include <stdint.h>
 
-/* Global state variables */ 
-volatile uint8_t light_state = 0;  // Tracks current light phase (1–4)
-volatile uint8_t walk = 0;         // Pedestrian walk flag, toggled by button press
-  
-/* State identifiers */
-#define RED 1
-#define RED_YELLOW 2 
-#define GREEN 3 
-#define YELLOW 4
+/* ----------------------------- Global State ------------------------------ */
  
-/* Timing constants (based on SysTick clock ticks) */ 
-#define LIGHT 16000000       // ~1s 
-#define TRANSITION 4000000   // ~0.25s
+volatile uint8_t light_state = 0;   // 1=RED, 2=RED+YELLOW, 3=GREEN, 4=YELLOW
+volatile uint8_t walk = 0;          // Pedestrian walk flag, toggled by button
  
-/* Base addresses for peripherals */
-#define RCC_BASE       0x40023800 
+/* ----------------------------- State Defines ----------------------------- */
+ 
+#define RED         1
+#define RED_YELLOW  2
+#define GREEN       3
+#define YELLOW      4
+ 
+/* --------------------------- Timing Constants ---------------------------- */
+ 
+#define LIGHT       3000    // ~3 seconds (in ms)
+#define TRANSITION  1000    // ~1 second (in ms)
+#define PRESCALER   15999   // Generate 1ms ticks
+ 
+/* ------------------------ Peripheral Base Addresses ---------------------- */
+ 
+#define RCC_BASE       0x40023800
 #define GPIOC_BASE     0x40020800
 #define GPIOA_BASE     0x40020000
-#define SYSTICK_BASE   0xE000E010
 #define SYSCFG_BASE    0x40013800
 #define NVIC_BASE      0xE000E100
 #define EXTI_BASE      0x40013C00
+#define TIM2_BASE      0x40000000
  
-/* RCC register */
+/* -------------------------- TIM2 Register Map ---------------------------- */
+ 
+#define TIM2_CR1       (*(volatile uint32_t*)(TIM2_BASE + 0x00))
+#define TIM2_DIER      (*(volatile uint32_t*)(TIM2_BASE + 0x0C))
+#define TIM2_SR        (*(volatile uint32_t*)(TIM2_BASE + 0x10))
+#define TIM2_CNT       (*(volatile uint32_t*)(TIM2_BASE + 0x24))
+#define TIM2_PSC       (*(volatile uint32_t*)(TIM2_BASE + 0x28))
+#define TIM2_ARR       (*(volatile uint32_t*)(TIM2_BASE + 0x2C))
+ 
+/* ---------------------------- RCC Registers ------------------------------ */
+ 
 #define RCC_AHB1ENR    (*(volatile uint32_t*)(RCC_BASE + 0x30))
+#define RCC_APB1ENR    (*(volatile uint32_t*)(RCC_BASE + 0x40))
  
-/* SYSCFG register for EXTI configuration */
+/* --------------------------- SYSCFG Registers ---------------------------- */
+ 
 #define SYSCFG_EXTICR3 (*(volatile uint32_t*)(SYSCFG_BASE + 0x10))
  
-/* EXTI registers for interrupt setup */ 
+/* ---------------------------- EXTI Registers ----------------------------- */
+ 
 #define EXTI_IMR       (*(volatile uint32_t*)(EXTI_BASE + 0x00))
 #define EXTI_EMR       (*(volatile uint32_t*)(EXTI_BASE + 0x04))
 #define EXTI_RTSR      (*(volatile uint32_t*)(EXTI_BASE + 0x08))
 #define EXTI_FTSR      (*(volatile uint32_t*)(EXTI_BASE + 0x0C))
 #define EXTI_PR        (*(volatile uint32_t*)(EXTI_BASE + 0x14))
  
-/* NVIC register for enabling IRQs */ 
+/* ---------------------------- NVIC Registers ----------------------------- */
+ 
 #define NVIC_ISER0     (*(volatile uint32_t*)(NVIC_BASE + 0x00))
  
-/* GPIOC registers */
+/* --------------------------- GPIOC Registers ----------------------------- */
+ 
 #define GPIOC_MODER    (*(volatile uint32_t*)(GPIOC_BASE + 0x00))
 #define GPIOC_OTYPER   (*(volatile uint32_t*)(GPIOC_BASE + 0x04))
 #define GPIOC_OSPEEDR  (*(volatile uint32_t*)(GPIOC_BASE + 0x08))
 #define GPIOC_PUPDR    (*(volatile uint32_t*)(GPIOC_BASE + 0x0C))
 #define GPIOC_ODR      (*(volatile uint32_t*)(GPIOC_BASE + 0x14))
  
-/* GPIOA registers */ 
+/* --------------------------- GPIOA Registers ----------------------------- */
+ 
 #define GPIOA_MODER    (*(volatile uint32_t*)(GPIOA_BASE + 0x00))
 #define GPIOA_PUPDR    (*(volatile uint32_t*)(GPIOA_BASE + 0x0C))
 #define GPIOA_IDR      (*(volatile uint32_t*)(GPIOA_BASE + 0x14))
  
-/* SysTick registers */
-#define SYSTICK_CTRL    (*(volatile uint32_t*)(SYSTICK_BASE + 0x00))
-#define SYSTICK_RELOAD  (*(volatile uint32_t*)(SYSTICK_BASE + 0x04))
-#define SYSTICK_CURRENT (*(volatile uint32_t*)(SYSTICK_BASE + 0x08))
+/* ------------------------- Function Prototypes --------------------------- */
  
-/* Function prototypes */ 
-void RCC_Init(void);
 void GPIOC_Init(void);
 void GPIOA_Init(void);
-void SysTick_Init(void);
-void SysTick_Set_Counter(uint32_t);
 void EXTI9_Init(void);
+void TIM2_Init(void);
+void TIM2_Set_Counter(uint32_t time_in_ms);
+ 
 void set_RED(void);
 void set_RED_YELLOW(void);
 void set_GREEN(void);
 void set_YELLOW(void);
 void set_RED_WHITE(void);
  
-/* Main function */ 
-int main(void) { 
-	RCC_Init();        // Enable GPIOA & GPIOC clocks
-	GPIOC_Init();      // Configure PC5, PC6, PC7, PC8 as outputs
-	GPIOA_Init();      // Configure PA9 as input with pull-down
-	SysTick_Init();    // Setup SysTick timer for state transitions
-	EXTI9_Init();      // Enable external interrupt for PA9 (button)
-
-	while (1);         // Main loop does nothing; logic runs in ISRs 
+/* ---------------------------- Main Function ------------------------------ */
+ 
+int main(void) {
+	GPIOC_Init();       // Configure LEDs (PC5–PC8)
+	GPIOA_Init();       // Configure button (PA9)
+	EXTI9_Init();       // Configure EXTI for PA9
+	TIM2_Init();        // Configure timer for state transitions
+ 
+	while (1);          // Main loop is empty; logic is handled via interrupts
 }
  
-/* Enable GPIOA and GPIOC peripheral clocks */
-void RCC_Init(void) {
- 	RCC_AHB1ENR |= (1 << 2); // Enable GPIOC clock
- 	RCC_AHB1ENR |= (1 << 0); // Enable GPIOA clock
+/* -------------------------- GPIO Configuration --------------------------- */
  
-}
- 
-/* Configure PC5-PC8 as push-pull outputs */
+/**
+ * Initialize GPIOC pins 5–8 as push-pull outputs
+ */
 void GPIOC_Init(void) {
- 	// Clear mode bits
- 	GPIOC_MODER &= ~(3 << (5 * 2));
- 	GPIOC_MODER &= ~(3 << (6 * 2));
-	GPIOC_MODER &= ~(3 << (7 * 2));
- 	GPIOC_MODER &= ~(3 << (8 * 2));
+	RCC_AHB1ENR |= (1 << 2);  // Enable clock for GPIOC
  
-	// Set as general-purpose output
- 	GPIOC_MODER |= (1 << (5 * 2));
- 	GPIOC_MODER |= (1 << (6 * 2));
-	GPIOC_MODER |= (1 << (7 * 2));
- 	GPIOC_MODER |= (1 << (8 * 2));
+	// Set MODER to output mode (01)
+	GPIOC_MODER &= ~((3 << (5 * 2)) | (3 << (6 * 2)) | (3 << (7 * 2)) | (3 << (8 * 2)));
+	GPIOC_MODER |=  ((1 << (5 * 2)) | (1 << (6 * 2)) | (1 << (7 * 2)) | (1 << (8 * 2)));
  
-	// Output type: push-pull
- 	GPIOC_OTYPER &= ~(1 << 5);
- 	GPIOC_OTYPER &= ~(1 << 6);
- 	GPIOC_OTYPER &= ~(1 << 7);
- 	GPIOC_OTYPER &= ~(1 << 8);
-
-	// Low speed and no pull-up/pull-down
- 	GPIOC_OSPEEDR &= ~(3 << (5 * 2));
- 	GPIOC_OSPEEDR &= ~(3 << (6 * 2));
- 	GPIOC_OSPEEDR &= ~(3 << (7 * 2));
- 	GPIOC_OSPEEDR &= ~(3 << (8 * 2));
+	// Set push-pull type
+	GPIOC_OTYPER &= ~((1 << 5) | (1 << 6) | (1 << 7) | (1 << 8));
  
-	GPIOC_PUPDR &= ~(3 << (5 * 2));
-	GPIOC_PUPDR &= ~(3 << (6 * 2));
- 	GPIOC_PUPDR &= ~(3 << (7 * 2));
- 	GPIOC_PUPDR &= ~(3 << (8 * 2));
+	// Set low speed
+	GPIOC_OSPEEDR &= ~((3 << (5 * 2)) | (3 << (6 * 2)) | (3 << (7 * 2)) | (3 << (8 * 2)));
+ 
+	// Disable pull-up/down
+	GPIOC_PUPDR &= ~((3 << (5 * 2)) | (3 << (6 * 2)) | (3 << (7 * 2)) | (3 << (8 * 2)));
 }
  
-/* Configure PA9 as input with pull-down resistor */
+/**
+ * Initialize PA9 as input with pull-down
+ */
 void GPIOA_Init(void) {
- 	GPIOA_MODER &= ~(3 << (9 * 2));  // Set PA9 as input
- 	GPIOA_PUPDR &= ~(3 << (9 * 2));
- 	GPIOA_PUPDR |=  (2 << (9 * 2));  // Enable pull-down
+	RCC_AHB1ENR |= (1 << 0);      // Enable clock for GPIOA
+ 
+	GPIOA_MODER &= ~(3 << (9 * 2));   // Input mode
+	GPIOA_PUPDR &= ~(3 << (9 * 2));   // Clear PUPD
+	GPIOA_PUPDR |=  (2 << (9 * 2));   // Set pull-down
 }
  
-/* Initialize SysTick for periodic interrupts */
-void SysTick_Init(void) {
- 	SysTick_Set_Counter(LIGHT);     // Set initial countdown (~3s)
- 	SYSTICK_CTRL |= (1 << 2);       // Clock source = processor clock
-	SYSTICK_CTRL |= (1 << 1);       // Enable SysTick interrupt
-	SYSTICK_CTRL |= (1 << 0);       // Enable SysTick counter
+/* --------------------------- EXTI Configuration -------------------------- */
+ 
+/**
+ * Configure EXTI Line 9 for PA9 (button)
+ */
+void EXTI9_Init(void) {
+	NVIC_ISER0 |= (1 << 23);             // Enable EXTI9_5 interrupt
+ 
+	SYSCFG_EXTICR3 &= ~(0xF << 4);       // Map EXTI9 to PA9 (Port A)
+ 
+	EXTI_IMR  |= (1 << 9);               // Unmask interrupt
+	EXTI_RTSR |= (1 << 9);               // Trigger on rising edge
+	EXTI_FTSR &= ~(1 << 9);              // No falling edge
+	EXTI_EMR  &= ~(1 << 9);              // Disable event
 }
  
-/* Set SysTick timer reload value */
-void SysTick_Set_Counter(uint32_t ticks) {
-	SYSTICK_RELOAD = ticks - 1;
- 	SYSTICK_CURRENT = 0;
- }
+/* --------------------------- TIM2 Configuration -------------------------- */
  
-/* SysTick interrupt handler: cycles through traffic light states */
-void SysTick_Handler(void) {
-	light_state = (light_state % 4) + 1;
+/**
+* Initialize TIM2 for time-based state transitions
+*/
+void TIM2_Init(void) {
+	RCC_APB1ENR |= (1 << 0);     // Enable TIM2 clock
+	NVIC_ISER0 |= (1 << 28);     // Enable TIM2 interrupt
  
-	switch(light_state) {
- 		case RED:
+	TIM2_PSC = PRESCALER;        // Prescaler for 1ms tick (assuming 16 MHz)
+	TIM2_Set_Counter(TRANSITION);
+ 
+	TIM2_DIER |= (1 << 0);       // Enable update interrupt
+	TIM2_CR1  |= (1 << 0);       // Start TIM2
+}
+ 
+/**
+ * Set TIM2 auto-reload value for countdown (in ms)
+ */
+void TIM2_Set_Counter(uint32_t time_in_ms) {
+	TIM2_ARR = time_in_ms - 1;
+}
+ 
+/* ------------------------- Interrupt Handlers ---------------------------- */
+ 
+/**
+ * Handle button press on PA9 (EXTI9_5)
+ */
+void EXTI9_5_IRQHandler(void) {
+	EXTI_PR |= (1 << 9);     // Clear pending interrupt
+	walk = 1;                // Enable pedestrian flag
+}
+ 
+/**
+* Handle TIM2 update interrupt for light transitions
+*/
+void TIM2_IRQHandler(void) {
+	TIM2_SR &= ~(1 << 0);                // Clear update flag
+	light_state = (light_state % 4) + 1; // Cycle states 1→4
+ 
+	switch (light_state) {
+		case RED:
 			set_RED();
- 				if(walk) {
- 					set_RED_WHITE(); // Show pedestrian signal
-					walk = 0;        // Clear pedestrian request
-				}
-			SysTick_Set_Counter(LIGHT);
+			if (walk) {
+				set_RED_WHITE();        // Enable pedestrian light
+				walk = 0;               // Reset walk flag
+			}
+			TIM2_Set_Counter(LIGHT);
 			break;
-
- 		case RED_YELLOW:
- 			set_RED_YELLOW();
- 			SysTick_Set_Counter(TRANSITION);
+ 
+		case RED_YELLOW:
+			set_RED_YELLOW();
+			TIM2_Set_Counter(TRANSITION);
 			break;
  
 		case GREEN:
- 			set_GREEN();
- 			SysTick_Set_Counter(LIGHT);
- 			break;
+			set_GREEN();
+			TIM2_Set_Counter(LIGHT);
+			break;
  
 		case YELLOW:
- 			set_YELLOW();
- 			SysTick_Set_Counter(TRANSITION);
- 			break;
+			set_YELLOW();
+			TIM2_Set_Counter(TRANSITION);
+			break;
 	}
 }
  
-/* Initialize external interrupt for PA9 (EXTI Line 9) */
-void EXTI9_Init(void) {
- 	NVIC_ISER0 |= (1 << 23);      // Enable EXTI9_5 interrupt in NVIC
-	SYSCFG_EXTICR3 &= ~(0xF << 4); // Map EXTI9 to PA9
-	EXTI_FTSR &= ~(1 << 9);       // Disable falling edge trigger
- 	EXTI_EMR &= ~(1 << 9);        // Disable event
- 	EXTI_RTSR |= (1 << 9);        // Enable rising edge trigger
- 	EXTI_IMR  |= (1 << 9);        // Unmask interrupt for line 9
-}
+/* ----------------------------- LED Control ------------------------------- */
  
-/* EXTI9_5 interrupt handler: toggle pedestrian walk request */
-void EXTI9_5_IRQHandler(void) {
- 	EXTI_PR |= (1 << 9); // Clear interrupt pending flag
- 	walk ^= 1;           // Toggle walk flag (may replace with walk = 1 for simplicity)
-}
- 
-/* Activate RED light only */
 void set_RED(void) {
- 	GPIOC_ODR |= (1 << 8);   // Red ON
- 	GPIOC_ODR &= ~(1 << 6);  // Yellow OFF
- 	GPIOC_ODR &= ~(1 << 5);  // Green OFF
- 	GPIOC_ODR &= ~(1 << 7);  // Pedestrian (White) OFF
+	GPIOC_ODR |=  (1 << 8);    // RED ON
+	GPIOC_ODR &= ~(1 << 6);    // YELLOW OFF
+	GPIOC_ODR &= ~(1 << 5);    // GREEN OFF
+	GPIOC_ODR &= ~(1 << 7);    // WHITE OFF
 }
  
-/* Activate RED + YELLOW lights (before GREEN) */
 void set_RED_YELLOW(void) {
- 	GPIOC_ODR |= (1 << 6);   // Yellow ON
-	GPIOC_ODR |= (1 << 8);   // Red ON (still active)
- 	GPIOC_ODR &= ~(1 << 5);  // Green OFF
- 	GPIOC_ODR &= ~(1 << 7);  // Pedestrian (White) OFF
+	GPIOC_ODR |=  (1 << 8);    // RED ON
+	GPIOC_ODR |=  (1 << 6);    // YELLOW ON
+	GPIOC_ODR &= ~(1 << 5);    // GREEN OFF
+	GPIOC_ODR &= ~(1 << 7);    // WHITE OFF
 }
  
-/* Activate GREEN light only */
 void set_GREEN(void) {
- 	GPIOC_ODR |= (1 << 5);   // Green ON
- 	GPIOC_ODR &= ~(1 << 8);  // Red OFF
- 	GPIOC_ODR &= ~(1 << 6);  // Yellow OFF
- 	GPIOC_ODR &= ~(1 << 7);  // Pedestrian (White) OFF
+	GPIOC_ODR |=  (1 << 5);    // GREEN ON
+	GPIOC_ODR &= ~(1 << 6);    // YELLOW OFF
+	GPIOC_ODR &= ~(1 << 8);    // RED OFF
+	GPIOC_ODR &= ~(1 << 7);    // WHITE OFF
 }
  
-/* Activate YELLOW light only (after GREEN) */
 void set_YELLOW(void) {
- 	GPIOC_ODR |= (1 << 6);   // Yellow ON
- 	GPIOC_ODR &= ~(1 << 5);  // Green OFF
- 	GPIOC_ODR &= ~(1 << 8);  // Red OFF
- 	GPIOC_ODR &= ~(1 << 7);  // Pedestrian (White) OFF
+	GPIOC_ODR |=  (1 << 6);    // YELLOW ON
+	GPIOC_ODR &= ~(1 << 5);    // GREEN OFF
+	GPIOC_ODR &= ~(1 << 8);    // RED OFF
+	GPIOC_ODR &= ~(1 << 7);    // WHITE OFF
 }
  
-/* Activate RED + WHITE (pedestrian walk signal) */ 
 void set_RED_WHITE(void) {
- 	GPIOC_ODR |= (1 << 8);   // Red ON
- 	GPIOC_ODR |= (1 << 7);   // White ON (pedestrian)
- 	GPIOC_ODR &= ~(1 << 6);  // Yellow OFF
- 	GPIOC_ODR &= ~(1 << 5);  // Green OFF
+	GPIOC_ODR |=  (1 << 8);    // RED ON
+	GPIOC_ODR |=  (1 << 7);    // WHITE ON (pedestrian)
+	GPIOC_ODR &= ~(1 << 6);    // YELLOW OFF
+	GPIOC_ODR &= ~(1 << 5);    // GREEN OFF
 }
+ 
