@@ -8,11 +8,11 @@ The system cycles through standard traffic light states (RED, RED+YELLOW, GREEN,
 
 | Component              | STM32 Pin | Color     |
 |------------------------|-----------|-----------|
-| Traffic Light - RED    | PC8       | 🔴 Red     |
-| Traffic Light - YELLOW | PC6       | 🟡 Yellow  |
-| Traffic Light - GREEN  | PC5       | 🟢 Green   |
-| Pedestrian Light       | PC7       | ⚪ White    |
-| Button (Pedestrian)    | PA9       | 🟠 Button   |
+| Traffic Light - RED    | PC8       | Red     |
+| Traffic Light - YELLOW | PC6       | Yellow  |
+| Traffic Light - GREEN  | PC5       | Green   |
+| Pedestrian Light       | PC7       | White    |
+| Button (Pedestrian)    | PA9       | Button   |
 ---
 
 ## System Behavior
